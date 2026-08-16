@@ -1,0 +1,140 @@
+FROM dunglas/frankenphp:1-php8.3-bookworm
+
+LABEL maintainer="Carlos Andres <descarlos2013@gmail.com>"
+LABEL description="Blazing fast Laravel 12 & FilamentPHP optimized image with FrankenPHP"
+LABEL version="2.0"
+
+# Set default environment variables (can be overridden at runtime)
+# These support both DEVELOPMENT and PRODUCTION modes
+ENV COMPOSER_ALLOW_SUPERUSER=1 \
+    COMPOSER_NO_INTERACTION=1 \
+    COMPOSER_MEMORY_LIMIT=-1 \
+    APP_ENV=production \
+    APP_DEBUG=false \
+    APP_MODE=api \
+    PHP_OPCACHE_ENABLE=1 \
+    PHP_OPCACHE_VALIDATE_TIMESTAMPS=0 \
+    PHP_MEMORY_LIMIT=512M \
+    PHP_MAX_EXECUTION_TIME=60 \
+    PHP_POST_MAX_SIZE=100M \
+    PHP_UPLOAD_MAX_FILESIZE=100M \
+    PHP_TIMEZONE=UTC \
+    FRANKENPHP_NUM_THREADS=8 \
+    FRANKENPHP_MAX_REQUESTS=1000 \
+    LOG_LEVEL=INFO
+
+WORKDIR /var/www/html
+
+# Install system dependencies and PHP extensions in a single layer for optimization
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Essential tools
+    bash nano vim htop mariadb-client procps tzdata ca-certificates \
+    # Build dependencies for PHP extensions
+    libzip-dev libpng-dev libonig-dev libxml2-dev libicu-dev zlib1g-dev \
+    curl git unzip libfreetype6-dev libjpeg62-turbo-dev \
+    libmagickwand-dev libpq-dev libwebp-dev libjpeg-dev \
+    # Additional utilities
+    supervisor cron \
+    # Configure and install GD with support for modern image formats
+    && docker-php-ext-configure gd \
+        --with-freetype \
+        --with-jpeg \
+        --with-webp \
+    # Install PHP extensions in parallel for faster builds
+    && docker-php-ext-install -j$(nproc) \
+        gd \
+        pdo_mysql \
+        pdo_pgsql \
+        pgsql \
+        zip \
+        intl \
+        pcntl \
+        posix \
+        exif \
+        bcmath \
+        opcache \
+        sockets \
+    # Install Redis extension via PECL
+    && pecl install redis \
+    && docker-php-ext-enable redis \
+    # Install Imagick separately with error handling (may fail on some architectures)
+    && (pecl install imagick && docker-php-ext-enable imagick) || echo "⚠️  Imagick installation skipped" \
+    # Clean up to reduce image size significantly
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/src/php* \
+    && pecl clear-cache
+
+# Install Composer from official image (latest stable version)
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+# Copy PHP configuration files
+COPY docker/php/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
+COPY docker/php/php.ini /usr/local/etc/php/conf.d/php.ini
+
+# Copy the blazing fast Caddy configuration file
+COPY ./Caddyfile.blazing /etc/caddy/Caddyfile
+
+# Copy all entrypoint scripts
+COPY docker/entrypoints/*.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/*.sh
+
+# Use the optimized entrypoint by default
+RUN ln -sf /usr/local/bin/default.optimized.sh /usr/local/bin/entrypoint
+
+# Setup shell aliases for better developer experience (DX)
+RUN echo "alias pa='cd /var/www/html && php artisan'" >> /etc/bash.bashrc \
+    && echo "alias ts='cd /var/www/html && php artisan typescript:transform'" >> /etc/bash.bashrc \
+    && echo "alias cu='cd /var/www/html && composer update'" >> /etc/bash.bashrc \
+    && echo "alias ci='cd /var/www/html && composer install'" >> /etc/bash.bashrc \
+    && echo "alias cda='cd /var/www/html && composer dump-autoload -o'" >> /etc/bash.bashrc \
+    && echo "alias opt='cd /var/www/html && php artisan optimize'" >> /etc/bash.bashrc \
+    && echo "alias optc='cd /var/www/html && php artisan optimize:clear'" >> /etc/bash.bashrc \
+    && echo "alias mfs='cd /var/www/html && php artisan migrate:fresh --seed'" >> /etc/bash.bashrc \
+    && echo "alias migrate='cd /var/www/html && php artisan migrate'" >> /etc/bash.bashrc \
+    && echo "alias tinker='cd /var/www/html && php artisan tinker'" >> /etc/bash.bashrc \
+    && echo "alias test='cd /var/www/html && php artisan test'" >> /etc/bash.bashrc \
+    && echo "alias pint='cd /var/www/html && ./vendor/bin/pint'" >> /etc/bash.bashrc \
+    && echo "alias phpstan='cd /var/www/html && ./vendor/bin/phpstan analyse'" >> /etc/bash.bashrc \
+    && echo '' >> /etc/bash.bashrc \
+    && echo '# Fancy welcome message for interactive shells' >> /etc/bash.bashrc \
+    && echo 'if [ -n "$PS1" ]; then' >> /etc/bash.bashrc \
+    && echo '  echo ""' >> /etc/bash.bashrc \
+    && echo '  echo -e "\033[1;36m🚀 Laravel FrankenPHP Blazing Container\033[0m"' >> /etc/bash.bashrc \
+    && echo '  echo -e "\033[1;33m   Environment: ${APP_ENV:-production}\033[0m"' >> /etc/bash.bashrc \
+    && echo '  echo -e "\033[1;35m   PHP Version: $(php -r \"echo PHP_VERSION;\")\033[0m"' >> /etc/bash.bashrc \
+    && echo '  echo ""' >> /etc/bash.bashrc \
+    && echo '  echo -e "\033[1;36m📦 Available aliases:\033[0m"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mpa\033[0m       - php artisan"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mts\033[0m       - php artisan typescript:transform"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mcu\033[0m       - composer update"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mci\033[0m       - composer install"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mcda\033[0m      - composer dump-autoload -o"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mopt\033[0m      - php artisan optimize"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32moptc\033[0m     - php artisan optimize:clear"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mmigrate\033[0m  - php artisan migrate"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mmfs\033[0m      - php artisan migrate:fresh --seed"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mtinker\033[0m   - php artisan tinker"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mtest\033[0m     - php artisan test"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mpint\033[0m     - Laravel Pint (code style)"' >> /etc/bash.bashrc \
+    && echo '  echo -e "  \033[32mphpstan\033[0m  - PHPStan static analysis"' >> /etc/bash.bashrc \
+    && echo '  echo ""' >> /etc/bash.bashrc \
+    && echo 'fi' >> /etc/bash.bashrc
+
+# Create opcache file cache directory
+RUN mkdir -p /tmp/opcache && chown -R www-data:www-data /tmp/opcache
+
+# Set proper permissions for Laravel
+RUN mkdir -p /var/www/html/storage /var/www/html/bootstrap/cache \
+    && chown -R www-data:www-data /var/www/html \
+    && chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
+
+# Expose HTTP port
+EXPOSE 8080
+
+# Health check for container orchestration
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8080/health || curl -f http://localhost:8080/ || exit 1
+
+# Set the entrypoint
+ENTRYPOINT ["/usr/local/bin/entrypoint"]
+

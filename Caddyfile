@@ -1,0 +1,123 @@
+{
+	# Disable automatic HTTPS — TLS is terminated by the load balancer / reverse proxy
+	auto_https off
+	# Disable the admin API endpoint in production containers
+	admin off
+
+	frankenphp {
+		# num_threads omitted — FrankenPHP defaults to runtime.NumCPU()*2
+		# No worker directive = traditional mode (one execution per request)
+	}
+
+	order php_server before file_server
+}
+
+:8080 {
+	root * /var/www/html/public
+
+	# ── Compression ─────────────────────────────────────────────────────────────
+	encode {
+		zstd
+		br
+		gzip
+		minimum_length 256
+	}
+
+	# ── Security headers ────────────────────────────────────────────────────────
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		X-XSS-Protection "1; mode=block"
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+		-X-Powered-By
+	}
+
+	# ── Health-check — Docker Swarm / load balancers poll this ──────────────────
+	@health path /health /up /ping
+	handle @health {
+		respond "OK" 200
+	}
+
+	# ── CORS preflight ───────────────────────────────────────────────────────────
+	# Handle OPTIONS at the Caddy level: fast, always reliable regardless of PHP state.
+	# Actual per-response Access-Control-Allow-Origin is still set by Laravel cors.php.
+	@preflight method OPTIONS
+	handle @preflight {
+		header Access-Control-Allow-Origin "{http.request.header.Origin}"
+		header Access-Control-Allow-Credentials "true"
+		header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS"
+		header Access-Control-Allow-Headers "Authorization, Content-Type, Accept, X-Requested-With, X-CSRF-Token, X-Socket-ID"
+		header Access-Control-Max-Age "86400"
+		header Vary "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+		respond "" 204
+	}
+
+	# ── Block sensitive paths ────────────────────────────────────────────────────
+	@denied path /.env* /.git/* /composer.json /composer.lock /package*.json /artisan /*.md
+	handle @denied {
+		respond 404
+	}
+
+	# ── PHP application ──────────────────────────────────────────────────────────
+	php_server {
+		try_files {path} /index.php
+		resolve_root_symlink
+	}
+
+	# ── Long-lived static assets (versioned by build hash) ──────────────────────
+	@static_assets {
+		file
+		path *.css *.js *.ico *.png *.jpg *.jpeg *.gif *.svg *.woff *.woff2 *.ttf *.eot *.otf *.webp *.avif *.map
+	}
+	handle @static_assets {
+		header Cache-Control "public, max-age=31536000, immutable"
+		header Vary "Accept-Encoding"
+	}
+
+	@build_assets path /build/* /assets/* /storage/app/public/*
+	handle @build_assets {
+		header Cache-Control "public, max-age=31536000, immutable"
+		header Vary "Accept-Encoding"
+	}
+
+	# ── HTML — never cache ───────────────────────────────────────────────────────
+	@html {
+		file
+		path *.html
+	}
+	handle @html {
+		header Cache-Control "no-cache, no-store, must-revalidate"
+	}
+
+	# ── Logging ──────────────────────────────────────────────────────────────────
+	# Silence health-check noise — must come BEFORE the catch-all log block
+	log @health {
+		output discard
+	}
+	log {
+		output stdout
+		format console
+		level {$LOG_LEVEL:INFO}
+	}
+
+	# ── Error pages ──────────────────────────────────────────────────────────────
+	# IMPORTANT: include CORS headers here so PHP errors are never misread by the
+	# browser as a CORS block (the real error would be invisible otherwise).
+	handle_errors {
+		@5xx expression `{http.error.status_code} >= 500 && {http.error.status_code} < 600`
+		handle @5xx {
+			header Access-Control-Allow-Origin "{http.request.header.Origin}"
+			header Access-Control-Allow-Credentials "true"
+			respond "Server Error" 500
+		}
+		@4xx expression `{http.error.status_code} >= 400 && {http.error.status_code} < 500`
+		handle @4xx {
+			header Access-Control-Allow-Origin "{http.request.header.Origin}"
+			header Access-Control-Allow-Credentials "true"
+			respond "Not Found" 404
+		}
+	}
+}
+
