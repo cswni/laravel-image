@@ -97,6 +97,19 @@ Swoole solo se carga en modo `swoole` (vía `PHP_INI_SCAN_DIR`), nunca dentro de
 | `LARAVEL_OPTIMIZE` | `0` / `1` | `php artisan optimize` y `public/storage` al arrancar |
 | `XDEBUG_MODE` | `off` / — | Con `make build-xdebug` |
 
+## Pasos de arranque propios de la app
+
+Si la app trae `docker/boot.sh`, se ejecuta en cada arranque antes del modo (y antes de un `command:`), con `APP_MODE` disponible. Sirve para lo que no es genérico: crear subcarpetas de `storage/`, esperar a Redis en ciertos modos, etc. Si el script falla, el contenedor no arranca.
+
+```sh
+#!/bin/sh
+set -e
+mkdir -p /var/www/html/storage/app/public/pdfs
+case "${APP_MODE:-api}" in
+  reverb|scheduler) php /var/www/html/bin/wait-for-redis.php ;;
+esac
+```
+
 ## Comandos dentro del contenedor
 
 `reload` recarga los workers de Octane y `ts` ejecuta `php artisan typescript:transform`. Son comandos y no alias de shell, así que funcionan con `docker exec` sin abrir una shell. Con Swarm no hay `docker compose exec`; se entra por el nombre del contenedor:

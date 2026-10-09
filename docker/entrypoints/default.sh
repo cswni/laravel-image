@@ -19,6 +19,12 @@ mkdir -p \
 MEM="${PHP_MEMORY_LIMIT:-512M}"
 printf 'memory_limit=%s\n' "${MEM}" > "${PHP_INI_DIR}/conf.d/zz-memory.ini"
 
+# App-specific boot steps (extra storage dirs, waiting for Redis...) live in
+# the app repo and run here, for every APP_MODE and for `command:` overrides.
+if [ -f "${APP_DIR}/docker/boot.sh" ]; then
+  sh "${APP_DIR}/docker/boot.sh"
+fi
+
 # Production images ship the code, but .env and storage/ only exist at runtime,
 # so caches and the public/storage link are built on boot (each container has
 # its own bootstrap/cache). The prod target sets LARAVEL_OPTIMIZE=1.
