@@ -1,49 +1,27 @@
-# cswni/laravel — Docker Run Commands
-# ─────────────────────────────────────────────────────────────────────────────
-# Flags used in all commands:
-#   -it     → interactive terminal (see logs, Ctrl+C to stop)
-#   --rm    → container is automatically deleted when it exits
-#   -v      → mount your Laravel app into the container
-# ─────────────────────────────────────────────────────────────────────────────
+# cswni/laravel-swoole — lean PHP 8.4 + Swoole Octane runtime
 
-# Web server — API mode (default)
-docker run -it --rm --name laravel-api -p 8091:8080 -v "$(pwd)":/var/www/html -e APP_MODE=api -e APP_ENV=production cswni/laravel:0.0.1
+Multi-stage Bookworm image: extensions compiled in a builder stage; final image has runtime libs only (no Node, no Composer, no FrankenPHP/Caddy, no editors).
 
-# Horizon — queue worker
-docker run -it --rm \
-  --name laravel-horizon \
+```bash
+make build          # → cswni/laravel-swoole:8.4
+make verify
+make size
+```
+
+## Modes (`APP_MODE`)
+
+| Mode | Command |
+|------|---------|
+| `api` (default) | `php artisan octane:start --server=swoole` |
+| `horizon` | `php artisan horizon` |
+| `reverb` | `php artisan reverb:start` |
+| `scheduler` | `schedule:run` loop |
+
+```bash
+docker run --rm -p 8080:8080 \
   -v "$(pwd)":/var/www/html \
-  -e APP_MODE=horizon \
-  -e APP_ENV=production \
-  cswni/laravel:0.0.1
+  -e APP_MODE=api -e APP_ENV=production \
+  cswni/laravel-swoole:8.4
+```
 
-# Scheduler — task scheduler loop (runs every 60s)
-docker run -it --rm \
-  --name laravel-scheduler \
-  -v "$(pwd)":/var/www/html \
-  -e APP_MODE=scheduler \
-  -e APP_ENV=production \
-  cswni/laravel:0.0.1
-
-# Reverb — WebSocket server
-docker run -it --rm \
-  --name laravel-reverb \
-  -p 8080:8080 \
-  -v "$(pwd)":/var/www/html \
-  -e APP_MODE=reverb \
-  -e APP_ENV=production \
-  cswni/laravel:0.0.1
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Open a bash shell inside an already-running container
-docker exec -it laravel-api bash
-
-# Enter the container directly (bypasses entrypoint — for debugging)
-docker run -it --rm \
-  --name laravel-shell \
-  -v "$(pwd)":/var/www/html \
-  -e APP_ENV=local \
-  --entrypoint bash \
-  cswni/laravel:0.0.1
-# ─────────────────────────────────────────────────────────────────────────────
-
+Extensions: bcmath, gd, zip, intl, pcntl, posix, pgsql, pdo_pgsql, pdo_mysql, exif, opcache, sockets, redis, imagick, swoole.
