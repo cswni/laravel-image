@@ -1,35 +1,41 @@
 #!/bin/sh
 set -e
 
-if [ "$(id -u)" = "0" ]; then
-  mkdir -p \
-    /var/www/html/storage/framework/cache \
-    /var/www/html/storage/framework/sessions \
-    /var/www/html/storage/framework/views \
-    /var/www/html/storage/logs \
-    /var/www/html/storage/app/public \
-    /var/www/html/bootstrap/cache
-  chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache 2>/dev/null || true
-fi
+APP_DIR=/var/www/html
 
+# Bind-mounted storage may be missing dirs on first boot. No chown: the code
+# lives on the host disk and must stay writable by the SFTP user.
+mkdir -p \
+  "${APP_DIR}/storage/framework/cache" \
+  "${APP_DIR}/storage/framework/sessions" \
+  "${APP_DIR}/storage/framework/views" \
+  "${APP_DIR}/storage/logs" \
+  "${APP_DIR}/storage/app/public" \
+  "${APP_DIR}/bootstrap/cache"
+
+# php.ini cannot read container env at runtime; write memory_limit on boot
+# so PHP_MEMORY_LIMIT changes need no rebuild.
+MEM="${PHP_MEMORY_LIMIT:-512M}"
+printf 'memory_limit=%s\n' "${MEM}" > "${PHP_INI_DIR}/conf.d/zz-memory.ini"
+
+# compose `command:` is passed as argv — honor it.
 if [ "$#" -gt 0 ]; then
   exec "$@"
 fi
 
-PHP_VER=$(php -r 'echo PHP_VERSION;' 2>/dev/null || echo "unknown")
 MODE="${APP_MODE:-api}"
-ENV="${APP_ENV:-local}"
 
 echo ""
-echo "  Laravel · PHP ${PHP_VER} · Swoole/Octane"
-echo "  Mode: ${MODE}  Env: ${ENV}"
+echo "  Laravel · PHP $(php -r 'echo PHP_VERSION;') · $(frankenphp version 2>/dev/null | cut -d' ' -f1-2)"
+echo "  Mode: ${MODE}  Env: ${APP_ENV:-local}  memory_limit=${MEM}"
 echo ""
 
-CUSTOM_ENTRYPOINT="/usr/local/bin/${MODE}.sh"
-
-if [ -f "$CUSTOM_ENTRYPOINT" ]; then
-  exec sh "$CUSTOM_ENTRYPOINT"
-fi
-
-echo "No entrypoint for mode '${MODE}'; falling back to api."
-exec sh /usr/local/bin/api.sh
+case "${MODE}" in
+  api|horizon|queue|scheduler|reverb)
+    exec sh "/usr/local/bin/${MODE}.sh"
+    ;;
+  *)
+    echo "Unknown APP_MODE '${MODE}' (api|horizon|queue|scheduler|reverb)." >&2
+    exit 1
+    ;;
+esac

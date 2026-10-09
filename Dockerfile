@@ -1,106 +1,63 @@
-# Lean PHP 8.4 + Swoole runtime for Laravel Octane (api / horizon / reverb / scheduler).
-# Multi-stage: compile extensions in builder, ship only runtime libs + .so in final image.
-# No Node, no Composer, no FrankenPHP/Caddy, no CLI junk.
+# syntax=docker/dockerfile:1
+# Laravel dev runtime: PHP ZTS (Alpine) + FrankenPHP + Swoole.
+# Code is bind-mounted, nothing is packaged. Build on the Linux dev server:
+#   make build
 
-# ─── Builder ──────────────────────────────────────────────────────────────────
-FROM php:8.4-cli-bookworm AS builder
+ARG PHP_VERSION=8.4
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        $PHPIZE_DEPS \
-        curl \
-        libzip-dev \
-        libpng-dev \
-        libonig-dev \
-        libxml2-dev \
-        libicu-dev \
-        zlib1g-dev \
-        libfreetype6-dev \
-        libjpeg62-turbo-dev \
-        libwebp-dev \
-        libmagickwand-dev \
-        libpq-dev \
-        libssl-dev \
-        libbrotli-dev \
-        libcurl4-openssl-dev \
-    && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
-    # posix is built into php:*-cli; do not docker-php-ext-install it
-    && docker-php-ext-install -j"$(nproc)" \
-        bcmath \
-        gd \
-        mbstring \
-        pdo_mysql \
-        pdo_pgsql \
-        pgsql \
-        zip \
-        intl \
-        pcntl \
-        exif \
-        opcache \
-        sockets \
-    && pecl install redis imagick swoole \
-    && docker-php-ext-enable redis imagick swoole \
-    && rm -rf /var/lib/apt/lists/* /tmp/pear ~/.pearrc
+# ─── base: PHP ZTS + FrankenPHP + extensions ─────────────────────────────────
+FROM dunglas/frankenphp:1-php${PHP_VERSION}-alpine AS base
 
-# ─── Runtime ─────────────────────────────────────────────────────────────────
-FROM php:8.4-cli-bookworm AS runtime
-
-LABEL maintainer="Carlos Andres <descarlos2013@gmail.com>"
-LABEL description="Lean PHP 8.4 + Swoole Laravel Octane runtime"
-LABEL version="3.0"
-
-ENV APP_MODE=api \
-    APP_ENV=production \
-    PHP_MEMORY_LIMIT=512M \
-    OCTANE_SERVER=swoole
+ARG WITH_IMAGICK=1
 
 WORKDIR /var/www/html
 
-# Runtime shared libs only (no -dev headers, no editors, no Node, no Composer)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        tzdata \
-        libzip4 \
-        libpng16-16 \
-        libonig5 \
-        libxml2 \
-        libicu72 \
-        zlib1g \
-        libfreetype6 \
-        libjpeg62-turbo \
-        libwebp7 \
-        libmagickwand-6.q16-6 \
-        libpq5 \
-        libssl3 \
-        libbrotli1 \
-        libcurl4 \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+# install-php-extensions ships with the image and removes its build deps in
+# this same layer. Pin versions for reproducible builds, e.g. swoole-6.0.2.
+# icu-data-full: Alpine's default ICU data is English-only (breaks es_* locales).
+RUN set -eux; \
+    apk add --no-cache tzdata icu-data-full; \
+    install-php-extensions \
+        bcmath exif gd intl opcache pcntl sockets zip \
+        pdo_mysql pdo_pgsql pgsql redis swoole; \
+    if [ "${WITH_IMAGICK}" = "1" ]; then install-php-extensions imagick; fi; \
+    # Swoole loads only in swoole mode (api.sh / reload set PHP_INI_SCAN_DIR),
+    # so it never runs inside FrankenPHP threads.
+    mkdir -p "${PHP_INI_DIR}/conf.d-swoole"; \
+    mv "${PHP_INI_DIR}/conf.d/docker-php-ext-swoole.ini" "${PHP_INI_DIR}/conf.d-swoole/"
 
-# Compiled extensions + enable ini files from builder
-COPY --from=builder /usr/local/lib/php/extensions/ /usr/local/lib/php/extensions/
-COPY --from=builder /usr/local/etc/php/conf.d/ /usr/local/etc/php/conf.d/
+COPY docker/php/app.ini     ${PHP_INI_DIR}/conf.d/zz-app.ini
+COPY docker/entrypoints/    /usr/local/bin/
 
-# OPcache profiles — api.sh copies the right one into conf.d at runtime
-COPY docker/php/opcache-production.ini  /usr/local/etc/php/opcache-production.ini
-COPY docker/php/opcache-development.ini /usr/local/etc/php/opcache-development.ini
-
-# Mode entrypoints (APP_MODE=api|horizon|reverb|scheduler)
-COPY docker/entrypoints/default.sh    /usr/local/bin/default.sh
-COPY docker/entrypoints/api.sh        /usr/local/bin/api.sh
-COPY docker/entrypoints/horizon.sh    /usr/local/bin/horizon.sh
-COPY docker/entrypoints/reverb.sh     /usr/local/bin/reverb.sh
-COPY docker/entrypoints/scheduler.sh  /usr/local/bin/scheduler.sh
-
-RUN chmod +x \
-        /usr/local/bin/default.sh \
-        /usr/local/bin/api.sh \
-        /usr/local/bin/horizon.sh \
-        /usr/local/bin/reverb.sh \
-        /usr/local/bin/scheduler.sh \
-    && ln -sf /usr/local/bin/default.sh /usr/local/bin/entrypoint \
-    && mkdir -p /tmp/opcache \
-    && chown -R www-data:www-data /tmp/opcache
+RUN chmod +x /usr/local/bin/*.sh /usr/local/bin/reload \
+    && ln -sf /usr/local/bin/default.sh /usr/local/bin/entrypoint
 
 EXPOSE 8080
 
+# The parent image's healthcheck probes the Caddy admin port, which only exists
+# in frankenphp mode. Traefik drops unhealthy containers, so define health
+# per service in compose instead.
+HEALTHCHECK NONE
+
 ENTRYPOINT ["/usr/local/bin/entrypoint"]
+# Reset the parent CMD (frankenphp run); default.sh would exec it as "$@".
+CMD []
+
+# ─── dev: bind-mounted code, Composer, opcache revalidation ──────────────────
+FROM base AS dev
+
+ARG WITH_XDEBUG=0
+
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+COPY docker/php/opcache.ini ${PHP_INI_DIR}/conf.d/zz-opcache.ini
+
+RUN if [ "${WITH_XDEBUG}" = "1" ]; then install-php-extensions xdebug; fi
+
+ENV APP_ENV=local \
+    APP_MODE=api \
+    OCTANE_SERVER=frankenphp \
+    OCTANE_WATCH=1 \
+    OCTANE_WORKERS=2 \
+    PHP_MEMORY_LIMIT=512M \
+    XDEBUG_MODE=off \
+    COMPOSER_ALLOW_SUPERUSER=1
