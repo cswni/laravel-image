@@ -23,7 +23,8 @@ verify: ## Check extensions, FrankenPHP and Swoole isolation
 	@docker run --rm --entrypoint sh $(IMAGE) -c '\
 	  set -e; \
 	  frankenphp version; \
-	  for e in bcmath exif gd intl opcache pcntl sockets zip pdo_mysql pdo_pgsql pgsql redis; do \
+	  php -r "exit(extension_loaded(\"Zend OPcache\") ? 0 : 1);" && echo "OK      opcache" || { echo "MISSING opcache"; exit 1; }; \
+	  for e in bcmath exif gd intl pcntl sockets zip pdo_mysql pdo_pgsql pgsql redis; do \
 	    php -r "exit(extension_loaded(\"$$e\") ? 0 : 1);" && echo "OK      $$e" || { echo "MISSING $$e"; exit 1; }; \
 	  done; \
 	  php -r "echo extension_loaded(\"imagick\") ? \"OK      imagick\n\" : \"-       imagick (built without)\n\";"; \
