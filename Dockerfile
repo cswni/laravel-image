@@ -5,26 +5,87 @@
 
 ARG PHP_VERSION=8.4
 
+FROM dunglas/frankenphp:1-php${PHP_VERSION}-alpine AS php
+
+# ─── swoole: compiled by hand to choose its features ─────────────────────────
+# install-php-extensions enables every DB hook (Firebird alone adds ~30 MB of
+# libfbclient) plus ssh2/sqlite/zstd. Octane needs none of them.
+FROM php AS swoole
+
+ARG SWOOLE_VERSION=6.2.3
+
+RUN set -eux; \
+    apk add --no-cache $PHPIZE_DEPS linux-headers \
+        openssl-dev curl-dev c-ares-dev brotli-dev postgresql-dev; \
+    # --enable-sockets needs the sockets extension headers
+    docker-php-ext-install sockets; \
+    mkdir -p /usr/src/swoole /out; \
+    cd /usr/src/swoole; \
+    curl -fsSL "https://pecl.php.net/get/swoole-${SWOOLE_VERSION}.tgz" | tar xz --strip-components=1; \
+    phpize; \
+    ./configure \
+        --enable-sockets \
+        --enable-mysqlnd \
+        --enable-swoole-curl \
+        --enable-cares \
+        --enable-brotli \
+        --enable-swoole-pgsql; \
+    make -j"$(nproc)"; \
+    # unstripped swoole.so is ~50 MB of debug symbols
+    strip --strip-unneeded modules/swoole.so; \
+    cp modules/swoole.so /out/
+
+# ─── imagick: built against the core ImageMagick libs only ───────────────────
+# install-php-extensions pulls every coder (PDF → ghostscript 62 MB,
+# HEIC → x265/aom 28 MB, SVG → librsvg/cairo/pango).
+FROM php AS imagick
+
+ARG IMAGICK_VERSION=3.8.0
+
+RUN set -eux; \
+    apk add --no-cache $PHPIZE_DEPS imagemagick-dev; \
+    mkdir -p /usr/src/imagick /out; \
+    cd /usr/src/imagick; \
+    curl -fsSL "https://pecl.php.net/get/imagick-${IMAGICK_VERSION}.tgz" | tar xz --strip-components=1; \
+    phpize; \
+    ./configure; \
+    make -j"$(nproc)"; \
+    strip --strip-unneeded modules/imagick.so; \
+    cp modules/imagick.so /out/
+
 # ─── base: PHP ZTS + FrankenPHP + extensions ─────────────────────────────────
-FROM dunglas/frankenphp:1-php${PHP_VERSION}-alpine AS base
+FROM php AS base
 
 ARG WITH_IMAGICK=1
 
 WORKDIR /var/www/html
 
-# install-php-extensions ships with the image and removes its build deps in
-# this same layer. Pin versions for reproducible builds, e.g. swoole-6.0.2.
+# Copied straight to their final path: a COPY to /tmp + mv stores each .so
+# twice (once per layer). Loaded by absolute path from the ini files below.
+COPY --from=swoole  /out/swoole.so  /usr/local/lib/php/extensions-extra/
+COPY --from=imagick /out/imagick.so /usr/local/lib/php/extensions-extra/
+
+# install-php-extensions removes its build deps in this same layer.
 # icu-data-full: Alpine's default ICU data is English-only (breaks es_* locales).
 RUN set -eux; \
-    apk add --no-cache tzdata icu-data-full; \
+    apk add --no-cache tzdata icu-data-full c-ares brotli-libs libpq; \
     install-php-extensions \
         bcmath exif gd intl opcache pcntl sockets zip \
-        pdo_mysql pdo_pgsql pgsql redis swoole; \
-    if [ "${WITH_IMAGICK}" = "1" ]; then install-php-extensions imagick; fi; \
+        pdo_mysql pdo_pgsql pgsql redis; \
     # Swoole loads only in swoole mode (api.sh / reload set PHP_INI_SCAN_DIR),
     # so it never runs inside FrankenPHP threads.
     mkdir -p "${PHP_INI_DIR}/conf.d-swoole"; \
-    mv "${PHP_INI_DIR}/conf.d/docker-php-ext-swoole.ini" "${PHP_INI_DIR}/conf.d-swoole/"
+    echo 'extension=/usr/local/lib/php/extensions-extra/swoole.so' \
+        > "${PHP_INI_DIR}/conf.d-swoole/docker-php-ext-swoole.ini"; \
+    if [ "${WITH_IMAGICK}" = "1" ]; then \
+        # imagemagick: png/gif/bmp coders; jpeg and webp are separate packages
+        apk add --no-cache imagemagick imagemagick-jpeg imagemagick-webp; \
+        echo 'extension=/usr/local/lib/php/extensions-extra/imagick.so' \
+            > "${PHP_INI_DIR}/conf.d/docker-php-ext-imagick.ini"; \
+    else \
+        rm /usr/local/lib/php/extensions-extra/imagick.so; \
+    fi; \
+    php -m > /dev/null
 
 COPY docker/php/app.ini     ${PHP_INI_DIR}/conf.d/zz-app.ini
 COPY docker/entrypoints/    /usr/local/bin/

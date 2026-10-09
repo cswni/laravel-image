@@ -19,19 +19,19 @@ make size
 | Modo | Comando | Tras editar código |
 |------|---------|--------------------|
 | `api` | `octane:start` (frankenphp/swoole) o `frankenphp php-server` (classic) | ver abajo |
-| `horizon` | `php artisan horizon` | `php artisan horizon:terminate` (compose lo reinicia) |
+| `horizon` | `php artisan horizon` | `php artisan horizon:terminate` (Swarm lo reinicia) |
 | `queue` | `php artisan queue:listen` | automático, un proceso por job |
 | `scheduler` | `php artisan schedule:work` | automático |
 | `reverb` | `php artisan reverb:start` | `php artisan reverb:restart` |
 
-Un `command:` en compose se ejecuta tal cual en lugar del modo.
+Un `command:` en el stack se ejecuta tal cual en lugar del modo.
 
 ### Servidor HTTP (`OCTANE_SERVER`, modo `api`)
 
 | Valor | Qué hace | Recarga |
 |-------|----------|---------|
 | `frankenphp` (defecto) | Octane con workers FrankenPHP | Automática con `OCTANE_WATCH=1` (watcher nativo, sin Node) |
-| `swoole` | Octane con Swoole, igual que producción | Manual: `docker compose exec api reload` |
+| `swoole` | Octane con Swoole, igual que producción | Manual: `reload` dentro del contenedor (ver abajo) |
 | `classic` | FrankenPHP sin workers | No hace falta: cada request lee el disco |
 
 El watcher usa las rutas de `watch` en `config/octane.php` de la app. Funciona porque el código vive en el disco del servidor Linux: los archivos que sube PhpStorm por SFTP generan eventos inotify normales.
@@ -53,17 +53,24 @@ Swoole solo se carga en modo `swoole` (vía `PHP_INI_SCAN_DIR`), nunca dentro de
 | `REVERB_SERVER_PORT` / `REVERB_DEBUG` | `8080` / `0` | Modo `reverb` |
 | `XDEBUG_MODE` | `off` | Con `make build-xdebug` |
 
-## Ejemplo con Traefik
+## Recargar a mano
 
-La imagen no define `HEALTHCHECK`: Traefik descarta contenedores `unhealthy`, así que el chequeo va por servicio.
+Con Swarm no hay `docker compose exec`; se entra por el nombre del contenedor:
+
+```bash
+docker exec $(docker ps -qf name=premas-api-2025_api) reload
+```
+
+## Ejemplo de stack (Swarm + Traefik)
+
+La imagen no define `HEALTHCHECK`: Traefik descarta contenedores `unhealthy`, así que el chequeo va por servicio. `docker stack deploy -c stack.yml myapp`.
 
 ```yaml
 x-app: &app
   image: cswni/laravel:8.4-dev
   env_file: .env
   volumes:
-    - ./:/var/www/html
-  restart: unless-stopped
+    - /var/www/myapp:/var/www/html
   networks: [traefik-net]
 
 services:
@@ -76,10 +83,14 @@ services:
       test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/up"]
       interval: 10s
       start_period: 20s
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.myapp.rule=Host(`myapp.dev.lan`)
-      - traefik.http.services.myapp.loadbalancer.server.port=8080
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.swarm.network=traefik-net
+        - traefik.http.routers.myapp.rule=Host(`myapp.${BASEDOMAIN}`)
+        - traefik.http.routers.myapp.entrypoints=https
+        - traefik.http.routers.myapp.tls=true
+        - traefik.http.services.myapp.loadbalancer.server.port=8080
 
   horizon:
     <<: *app
@@ -92,10 +103,14 @@ services:
   reverb:
     <<: *app
     environment: { APP_MODE: reverb }
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.myapp-ws.rule=Host(`ws.myapp.dev.lan`)
-      - traefik.http.services.myapp-ws.loadbalancer.server.port=8080
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.swarm.network=traefik-net
+        - traefik.http.routers.myapp-ws.rule=Host(`ws.${BASEDOMAIN}`)
+        - traefik.http.routers.myapp-ws.entrypoints=https
+        - traefik.http.routers.myapp-ws.tls=true
+        - traefik.http.services.myapp-ws.loadbalancer.server.port=8080
 
 networks:
   traefik-net:

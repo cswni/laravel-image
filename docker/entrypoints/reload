@@ -1,6 +1,6 @@
 #!/bin/sh
 # Reload Octane workers without restarting the container:
-#   docker compose exec api reload
+#   docker exec $(docker ps -qf name=<stack>_api) reload
 set -e
 
 cd /var/www/html
