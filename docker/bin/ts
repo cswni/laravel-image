@@ -1,0 +1,6 @@
+#!/bin/sh
+# Shortcut for `php artisan typescript:transform`:
+#   docker exec <container> ts
+set -e
+cd /var/www/html
+exec php artisan typescript:transform "$@"

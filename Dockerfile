@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
-# Laravel dev runtime: PHP ZTS (Alpine) + FrankenPHP + Swoole.
-# Code is bind-mounted, nothing is packaged. Build on the Linux dev server:
-#   make build
+# Laravel runtime: PHP ZTS (Alpine) + FrankenPHP + Swoole. Targets:
+#   dev     — code bind-mounted, watcher on, Composer      (make build)
+#   builder — Composer for the vendor stage of app images (make build-builder)
+#   prod    — base for app images built on every deploy   (make build-prod)
 
 ARG PHP_VERSION=8.4
 
@@ -89,20 +90,33 @@ RUN set -eux; \
 
 COPY docker/php/app.ini     ${PHP_INI_DIR}/conf.d/zz-app.ini
 COPY docker/entrypoints/    /usr/local/bin/
+COPY docker/bin/            /usr/local/bin/
 
-RUN chmod +x /usr/local/bin/*.sh /usr/local/bin/reload \
+RUN chmod +x /usr/local/bin/*.sh /usr/local/bin/reload /usr/local/bin/ts \
     && ln -sf /usr/local/bin/default.sh /usr/local/bin/entrypoint
 
 EXPOSE 8080
 
 # The parent image's healthcheck probes the Caddy admin port, which only exists
 # in frankenphp mode. Traefik drops unhealthy containers, so define health
-# per service in compose instead.
+# per service in the stack instead.
 HEALTHCHECK NONE
 
 ENTRYPOINT ["/usr/local/bin/entrypoint"]
 # Reset the parent CMD (frankenphp run); default.sh would exec it as "$@".
 CMD []
+
+# ─── builder: vendor stage of app images (composer install --no-dev) ────────
+# Never shipped: the app Dockerfile copies vendor/ out of it into a prod image.
+FROM base AS builder
+
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+# git/unzip: fallback for packages without a dist archive
+RUN apk add --no-cache git unzip
+
+ENV COMPOSER_ALLOW_SUPERUSER=1 \
+    COMPOSER_NO_INTERACTION=1
 
 # ─── dev: bind-mounted code, Composer, opcache revalidation ──────────────────
 FROM base AS dev
@@ -110,7 +124,7 @@ FROM base AS dev
 ARG WITH_XDEBUG=0
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
-COPY docker/php/opcache.ini ${PHP_INI_DIR}/conf.d/zz-opcache.ini
+COPY docker/php/opcache-dev.ini ${PHP_INI_DIR}/conf.d/zz-opcache.ini
 
 RUN if [ "${WITH_XDEBUG}" = "1" ]; then install-php-extensions xdebug; fi
 
@@ -122,3 +136,18 @@ ENV APP_ENV=local \
     PHP_MEMORY_LIMIT=512M \
     XDEBUG_MODE=off \
     COMPOSER_ALLOW_SUPERUSER=1
+
+# ─── prod: runtime for app images built on every deploy ──────────────────────
+# App Dockerfiles do `FROM cswni/laravel:8.4-prod` and COPY the code in.
+# No Composer, no watcher; opcache never re-reads files.
+FROM base AS prod
+
+COPY docker/php/opcache-prod.ini ${PHP_INI_DIR}/conf.d/zz-opcache.ini
+
+ENV APP_ENV=production \
+    APP_MODE=api \
+    OCTANE_SERVER=frankenphp \
+    OCTANE_WATCH=0 \
+    OCTANE_WORKERS=auto \
+    LARAVEL_OPTIMIZE=1 \
+    PHP_MEMORY_LIMIT=512M
