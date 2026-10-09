@@ -1,0 +1,18 @@
+#!/bin/sh
+# Reload Octane workers without restarting the container:
+#   docker compose exec api reload
+set -e
+
+cd /var/www/html
+
+case "${OCTANE_SERVER:-frankenphp}" in
+  classic)
+    echo "Classic mode reads code on every request; nothing to reload."
+    exit 0
+    ;;
+  swoole)
+    export PHP_INI_SCAN_DIR="${PHP_INI_DIR}/conf.d:${PHP_INI_DIR}/conf.d-swoole"
+    ;;
+esac
+
+exec php artisan octane:reload

@@ -1,5 +1,8 @@
 #!/bin/sh
 set -e
 
-echo "[scheduler] Starting Laravel scheduler (schedule:work)..."
-exec php artisan schedule:work --verbose --no-interaction
+cd /var/www/html
+
+# Each scheduled task runs in a new process, so code edits apply automatically.
+echo "[scheduler] Starting schedule:work..."
+exec php artisan schedule:work --no-interaction
